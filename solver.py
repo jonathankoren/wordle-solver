@@ -49,6 +49,7 @@ class Dictionary:
         return filter(lambda w: pattern.match(self.words[w]), candidates)
 
     def guess(self, length, include_letters, exclude_letters, pattern, return_scores=False):
+        print(include_letters, exclude_letters)
         candidates = list(self.unroll(self.search(length, include_letters, exclude_letters, pattern)))
 
         # build unigram, bigram, and position frequencies
@@ -97,22 +98,28 @@ class Dictionary:
 def parse_line(line, contains, does_not_contain, bad_positions, good_positions):
     last_letter = None
     position = 0
+    read_special = False
     for l in list(line):
+        read_special = False
         if l == ' ':
             continue
         elif l == '?':
             position -= 1
             bad_positions[position].add(last_letter)
             contains.add(last_letter)
+            read_special = True
         elif l == '*':
             position -= 1
             good_positions[position] = last_letter
             contains.add(last_letter)
+            read_special = True
         elif last_letter is not None and last_letter not in '?*':
             does_not_contain.add(last_letter)
 
         position += 1
         last_letter = l
+    if not read_special:
+        does_not_contain.add(last_letter)
 
 def make_regexp(bad_positions, good_positions):
     r = ''
