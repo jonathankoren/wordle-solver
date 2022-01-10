@@ -49,7 +49,6 @@ class Dictionary:
         return filter(lambda w: pattern.match(self.words[w]), candidates)
 
     def guess(self, length, include_letters, exclude_letters, pattern, return_scores=False):
-        print(include_letters, exclude_letters)
         candidates = list(self.unroll(self.search(length, include_letters, exclude_letters, pattern)))
 
         # build unigram, bigram, and position frequencies
@@ -114,16 +113,17 @@ def parse_line(line, contains, does_not_contain, bad_positions, good_positions):
             contains.add(last_letter)
             read_special = True
         elif last_letter is not None and last_letter not in '?*':
-            does_not_contain.add(last_letter)
+            if last_letter not in contains:
+                does_not_contain.add(last_letter)
 
         position += 1
         last_letter = l
-    if not read_special:
+    if not read_special and last_letter is not None:
         does_not_contain.add(last_letter)
 
-def make_regexp(bad_positions, good_positions):
+def make_regexp(bad_positions, good_positions, word_length):
     r = ''
-    for i in range(5):
+    for i in range(word_length):
         if good_positions[i] is not None:
             r += good_positions[i]
         elif len(bad_positions[i]) > 0:
@@ -182,8 +182,8 @@ if __name__ == '__main__':
         sys.stdout.write("\n> ")
         try:
             parse_line(input(), contains, does_not_contain, bad_positions, good_positions)
-            rescored = rescore(d.guess(word_length, contains, does_not_contain, make_regexp(bad_positions, good_positions), True), \
-                    common_d.guess(word_length, contains, does_not_contain, make_regexp(bad_positions, good_positions), True))
+            rescored = rescore(d.guess(word_length, contains, does_not_contain, make_regexp(bad_positions, good_positions, word_length), True), \
+                    common_d.guess(word_length, contains, does_not_contain, make_regexp(bad_positions, good_positions, word_length), True))
             print(rescored[:10])
         except EOFError:
             break
