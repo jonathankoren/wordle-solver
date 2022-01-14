@@ -271,7 +271,6 @@ if __name__ == '__main__':
         if line == 'CORRECT' or line == 'YOU LOSE':
             if line == 'YOU LOSE':
                 logger.info('LOST c: %s dnc: %s regep %s', game_state.contains, game_state.does_not_contain, game_state._make_regexp().pattern)
-
             game_state.reset()
             line = ''
 
@@ -287,6 +286,7 @@ if __name__ == '__main__':
             print(rescored[:10])
             try:
                 line = input()
+                logger.debug('RECVD <%s>', line)
             except EOFError:
                 sys.exit(0)
         else:
@@ -297,8 +297,11 @@ if __name__ == '__main__':
                     line = input()
                 except EOFError:
                     sys.exit(2)
-                if (line != 'INVALID WORD'):
+                if (line == 'INVALID WORD'):
+                    logger.debug('RECVD <%s>', line)
+                else:
                     break
+
 
         if (not args.game):
             sys.stdout.write("\n> ")

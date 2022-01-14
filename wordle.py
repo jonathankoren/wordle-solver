@@ -134,15 +134,15 @@ for game_id in range(args.num_games):
     target = next(word_generator)
     logger.debug("New game (%d / %d). target: %s", game_id, args.num_games, target)
     correct = False
-    attempt = 0
-    for attempt in range(1, max_attempts + 1):
+    attempt = 1
+    while attempt <= max_attempts:
         guess = None
         target_letters = count_letters(target)
         try:
             if out_pipe == sys.stdout:
                 safe_write(out_pipe, '> ')
             guess = safe_readline(in_pipe)
-            logger.debug('received %s', str(guess))
+            logger.debug('Attempt %d received %s', attempt, str(guess))
         except EOFError:
             break;
         if guess == '':
@@ -174,12 +174,13 @@ for game_id in range(args.num_games):
                 elif c in target_letters and target_letters[c] > 0:
                     resp += '?'
 
-            if attempt < max_attempts:
+            if attempt != max_attempts:
                 logger.debug('sending %s, attempt %d', resp, attempt)
                 if out_pipe == sys.stdout:
                     print(f"{resp}\n")
                 else:
                     safe_write(out_pipe, f"{resp}\n")
+        attempt += 1
 
     if not correct:
         safe_write(out_pipe, f"YOU LOSE\n")
