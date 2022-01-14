@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 
+import argparse
+import math
 import sys
 import re
+
+import logging
+logging.basicConfig()
+logger = logging.getLogger('solver.py')
 
 class Dictionary:
     def __init__(self, filename, required_word_length=None):
@@ -48,142 +54,251 @@ class Dictionary:
             candidates = candidates - self.letter_index[letter]
         return filter(lambda w: pattern.match(self.words[w]), candidates)
 
-    def guess(self, length, include_letters, exclude_letters, pattern, return_scores=False):
-        candidates = list(self.unroll(self.search(length, include_letters, exclude_letters, pattern)))
+    def unroll(self, ids):
+        return map(lambda id: self.words[id], ids)
 
+
+class GameState:
+    def __init__(self, word_length, dictionaries):
+        self.word_length = word_length
+        self.dictionaries = dictionaries
+        self.reset()
+
+    def reset(self):
+        self.contains = set()
+        self.does_not_contain = set()
+        self.bad_positions = [None] * self.word_length
+        for i in range(self.word_length):
+            self.bad_positions[i] = set()
+        self.good_positions = [None] * self.word_length
+
+    def parse_line(self, line):
+        last_letter = None
+        position = 0
+        read_special = False
+        for l in list(line):
+            read_special = False
+            if l == ' ':
+                continue
+            elif l == '?':
+                position -= 1
+                self.bad_positions[position].add(last_letter)
+                self.contains.add(last_letter)
+                read_special = True
+            elif l == '*':
+                position -= 1
+                self.good_positions[position] = last_letter
+                self.contains.add(last_letter)
+                read_special = True
+            elif last_letter is not None and last_letter not in '?*':
+                if last_letter not in self.contains:
+                    self.does_not_contain.add(last_letter)
+
+            position += 1
+            last_letter = l
+        if not read_special and last_letter is not None and last_letter not in self.contains:
+            self.does_not_contain.add(last_letter)
+
+    def _letter_freqs(self, candidates, NGRAM_LENGTH, USE_POS_FREQ):
         # build unigram, bigram, and position frequencies
-        used_letters = include_letters.union(exclude_letters)
+        used_letters = self.contains.union(self.does_not_contain)
         letter_freqs = {}
         for word in candidates:
             for i in range(len(word)):
-                for stop in range(2):
+                for stop in range(NGRAM_LENGTH):
                     if i + stop + 1 <= len(word):
                         letter = word[i:i+stop+1]
                         if letter not in used_letters:
                             letter_freqs[letter] = letter_freqs.get(letter, 0) + 1
-                        letter = letter + str(i)
-                        if letter not in used_letters:
-                            letter_freqs[letter] = letter_freqs.get(letter, 0) + 1
+                        if USE_POS_FREQ:
+                            letter = letter + str(i)
+                            if letter not in used_letters:
+                                letter_freqs[letter] = letter_freqs.get(letter, 0) + 1
+        return letter_freqs
+
+    def _single_guess(self, d, **kwargs):
+        NGRAM_LENGTH = kwargs.get('ngrams', 2)
+        USE_POS_FREQ = kwargs.get('pos_freq', True)
+
+        candidates = list(d.unroll(d.search(self.word_length, self.contains, self.does_not_contain, self._make_regexp())))
+
+        letter_freqs = self._letter_freqs(candidates, NGRAM_LENGTH, USE_POS_FREQ)
 
         # score the candidates
         scores = {}
-        eligible_letters = self.single_letters - used_letters
+        eligible_letters = d.single_letters - self.contains.union(self.does_not_contain)
         for word in candidates:
             scores[word] = 0
             scored_letters = set()
             for i in range(len(word)):
-                for stop in range(2):
+                for stop in range(NGRAM_LENGTH):
                     if i + stop + 1 <= len(word):
                         letter = word[i:i+stop+1]
                         if (letter[:1] in eligible_letters) or (letter[1:2] in eligible_letters):
                             if letter not in scored_letters:
                                 scores[word] += letter_freqs[letter]
                                 scored_letters.add(letter)
-                                scores[word] += letter_freqs[f"{letter}{i}"]
+                                if USE_POS_FREQ:
+                                    scores[word] += letter_freqs[f"{letter}{i}"]
                             else:
                                 scores[word] -= letter_freqs[letter] / 2
-                                scores[word] += letter_freqs[f"{letter}{i}"]
+                                if USE_POS_FREQ:
+                                    scores[word] += letter_freqs[f"{letter}{i}"]
 
-        scored = sorted(scores.items(), key=lambda p: p[1], reverse=True)
+        return sorted(scores.items(), key=lambda p: p[1], reverse=True)
+
+    def _single_guess_greedy_entropy(self, d, **kwargs):
+        scores = {}
+        tmp_contains = set(self.contains)
+        candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp()))
+        logger.debug('_sgre initial canidates: %d', len(candidate_ids))
+        while (len(candidate_ids) > 1) and len(tmp_contains) < self.word_length:
+            max_entropy = 0
+            max_entropy_letter = None
+            for letter in d.single_letters - tmp_contains.union(self.does_not_contain):
+                p = len(candidate_ids - d.letter_index[letter]) / len(candidate_ids)
+                entropy = 0
+                if 0 < p and p < 1:
+                    entropy = -(p * math.log2(p)) - ((1 - p) * math.log2(1 - p))
+                if max_entropy_letter is None or max_entropy < entropy:
+                    max_entropy_letter = letter
+                    max_entropy = entropy
+            logger.debug('_sgre MAX ENTROPY letter %s entrop %f', max_entropy_letter, max_entropy)
+            tmp_contains.add(max_entropy_letter)
+            candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp()))
+
+        for candidate_id in candidate_ids:
+            scores[d.words[candidate_id]] = 1
+
+        return sorted(scores.items(), key=lambda p: p[1], reverse=True)
+
+
+    def guess(self, return_scores=False, **kwargs):
+        logger.debug('STATE: wl %d, contains %s, dnc %s, regexp %s', self.word_length, self.contains, self.does_not_contain, self._make_regexp().pattern)
+        GUESS_LAMBDA = kwargs.get('glam', lambda d: self._single_guess(d))
+        NORMALIZE_SCORES = kwargs.get('normalize', True)
+        new_scores = {}
+        for d in self.dictionaries:
+            guesses = GUESS_LAMBDA(d)
+            norm = sum(map(lambda p: p[1], guesses))
+            if norm == 0:
+                norm = 1
+            logger.debug("num guesss %d  norm %f", len(guesses), norm )
+            if len(guesses) < 10:
+                logger.debug("guesses %s", guesses)
+
+            for (guess, score) in guesses:
+                if NORMALIZE_SCORES:
+                    new_scores[guess] = max(new_scores.get(guess, float('-inf')), score / norm)
+                else:
+                    new_scores[guess] = score
+
+        scored = sorted(new_scores.items(), key=lambda p: p[1], reverse=True)
         if return_scores:
             return scored
         else:
             return list(map(lambda p: p[0], scored))
 
-    def unroll(self, ids):
-        return map(lambda id: self.words[id], ids)
-
-
-def parse_line(line, contains, does_not_contain, bad_positions, good_positions):
-    last_letter = None
-    position = 0
-    read_special = False
-    for l in list(line):
-        read_special = False
-        if l == ' ':
-            continue
-        elif l == '?':
-            position -= 1
-            bad_positions[position].add(last_letter)
-            contains.add(last_letter)
-            read_special = True
-        elif l == '*':
-            position -= 1
-            good_positions[position] = last_letter
-            contains.add(last_letter)
-            read_special = True
-        elif last_letter is not None and last_letter not in '?*':
-            if last_letter not in contains:
-                does_not_contain.add(last_letter)
-
-        position += 1
-        last_letter = l
-    if not read_special and last_letter is not None:
-        does_not_contain.add(last_letter)
-
-def make_regexp(bad_positions, good_positions, word_length):
-    r = ''
-    for i in range(word_length):
-        if good_positions[i] is not None:
-            r += good_positions[i]
-        elif len(bad_positions[i]) > 0:
-            r += '[^'+ ''.join(bad_positions[i]) + ']'
-        else:
-            r += '.'
-    return re.compile(r)
-
-def rescore(deep, common):
-    new_deep = [None] * len(deep)
-    deep_norm = sum(map(lambda p: p[1], deep))
-    for i in range(len(deep)):
-        new_deep[i] = (deep[i][0], deep[i][1] / deep_norm)
-    new_common = [None] * len(common)
-    common_norm = sum(map(lambda p: p[1], common))
-    for i in range(len(common)):
-        new_common[i] = (common[i][0], common[i][1] / common_norm)
-
-    ret = []
-    added = set()
-    for p in sorted(new_common + new_deep, key=lambda p: p[1], reverse=True):
-        if p[0] not in added:
-            ret.append(p[0])
-            added.add(p[0])
-    return ret
-
+    def _make_regexp(self):
+        r = ''
+        for i in range(self.word_length):
+            if self.good_positions[i] is not None:
+                r += self.good_positions[i]
+            elif len(self.bad_positions[i]) > 0:
+                r += '[^'+ ''.join(self.bad_positions[i]) + ']'
+            else:
+                r += '.'
+        return re.compile(r)
 
 ##############################################################################
 if __name__ == '__main__':
-    word_length = 5
-    if len(sys.argv) > 1:
-        word_length = int(sys.argv[1])
+    parser = argparse.ArgumentParser(description='Wordle solver')
+    parser.add_argument('word_length', type=int, default=5, nargs='?', help='length of word')
+    parser.add_argument('--game', action='store_true', default=False)
+    parser.add_argument('--debug', action='store_true', default=False)
+    parser.add_argument('--verbose', action='store_true', default=False)
+    parser.add_argument('--strategy', type=int, default=0, help='ID of guessing strategy')
+    parser.add_argument('--dictionaries', type=str, default='words_alpha.txt,google-10000-english.txt', help='CSV of dictionary files to load')
+    args = parser.parse_args()
 
-    deep_dict_filename = '5_letter_words_alpha.txt'
-    common_dict_filename = '5_letter_google-10000-english.txt'
-    if word_length != 5:
-        deep_dict_filename = 'words_alpha.txt'
-        common_dict_filename = 'google-10000-english.txt'
+    if args.verbose:
+        logger.setLevel(logging.INFO)
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
 
-    print('loading...')
-    d = Dictionary(deep_dict_filename, word_length)
-    common_d = Dictionary(common_dict_filename, word_length)
-    print('Enter result of guess, with marking each letter with a * if it is in the correct')
-    print('position, or ? if it is in the wrong position.')
-    print('Example: "a?rose*" means the a is in the incorrect position. and e is in the')
-    print('correct position.')
-    print('Hit enter for initial guess.')
-    print()
-    contains = set()
-    does_not_contain = set()
-    bad_positions = [None] * word_length
-    for i in range(word_length):
-        bad_positions[i] = set()
-    good_positions = [None] * word_length
+
+    dictionaries = []
+    for filename in args.dictionaries.split(','):
+        filename = filename.strip()
+        if args.word_length == 5:
+            filename = '5_letter_' + filename
+        dictionaries.append(Dictionary(filename, args.word_length))
+
+    if (not args.game):
+        print('loading...')
+    game_state = GameState(args.word_length, dictionaries)
+
+    strategies = [
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess(d, ngrams=2, pos_freq=True)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess(d, ngrams=2, pos_freq=False)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess(d, ngrams=1, pos_freq=True)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess(d, ngrams=1, pos_freq=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess(d, ngrams=2, pos_freq=True)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess(d, ngrams=2, pos_freq=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess(d, ngrams=1, pos_freq=True)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess(d, ngrams=1, pos_freq=False)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_entropy(d)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_entropy(d)),
+    ]
+    if args.strategy >= len(strategies):
+        args.strategy = 0
+
+    if (not args.game):
+        print('Using strategy', args.strategy)
+        print()
+        print('Enter result of guess, with marking each letter with a * if it is in the correct')
+        print('position, or ? if it is in the wrong position.')
+        print('Example: "a?rose*" means the a is in the incorrect position. and e is in the')
+        print('correct position.')
+        print('Hit enter for initial guess.')
+        print()
+    else:
+        logger.info('Using strategy %d', args.strategy)
+
+    line = ''
     while True:
-        sys.stdout.write("\n> ")
-        try:
-            parse_line(input(), contains, does_not_contain, bad_positions, good_positions)
-            rescored = rescore(d.guess(word_length, contains, does_not_contain, make_regexp(bad_positions, good_positions, word_length), True), \
-                    common_d.guess(word_length, contains, does_not_contain, make_regexp(bad_positions, good_positions, word_length), True))
+        logger.debug('RECVD <%s>', line)
+        if line == 'CORRECT' or line == 'YOU LOSE':
+            if line == 'YOU LOSE':
+                logger.info('LOST c: %s dnc: %s regep %s', game_state.contains, game_state.does_not_contain, game_state._make_regexp().pattern)
+
+            game_state.reset()
+            line = ''
+
+        game_state.parse_line(line)
+        rescored = strategies[args.strategy]()
+        if len(rescored) == 0:
+            if (not args.game):
+                print('OUT OF GUESSES')
+                game_state.reset()
+                line = ''
+
+        if (not args.game):
             print(rescored[:10])
-        except EOFError:
-            break
+            try:
+                line = input()
+            except EOFError:
+                sys.exit(0)
+        else:
+            for guess in rescored:
+                logger.debug('SENDING <%s>', guess)
+                print(guess)
+                try:
+                    line = input()
+                except EOFError:
+                    sys.exit(2)
+                if (line != 'INVALID WORD'):
+                    break
+
+        if (not args.game):
+            sys.stdout.write("\n> ")

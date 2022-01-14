@@ -1,8 +1,11 @@
 # Command Line Wordle Solver
 
+## Solver
 Usage: ./solver.py [word_length]
 
 Defaults to words of length 5
+
+See `--help` for all options.
 
 Reads from STDIN the results of the previous guess, and outputs a list of next
 guesses.
@@ -14,6 +17,27 @@ position indicated by a following `?`, and letters in the correct position with
 a following `*`. For example, `a?rose*` indicates that the mystery words has
 an `a` somewhere in it, an `e` in the fifth position, and does not contain
 an `r`, `o`, or `s`.
+
+
+## Wordle
+Usage: ./wordle.py [word_length] [number_of_games]
+
+Defaults to words of length 5
+
+See `--help` for all options.
+
+Reads from STDIN a guess, and outputs a `solver.py` compatible description of
+the matching letters.
+
+Prints out summary statistics when the games are completed.
+
+
+## Advanced
+`solver.py` can automatically play `wordle.py`. Pass `wordle.py` `--exec`
+with the command line of a Wordle solver.
+
+`solver.py` has multiple guessing strategies. Try passing `--strategy` with
+the strategy ID, and compare how one strategy compares to the others.
 
 ## References
 * `words_alpha.txt` taken from https://github.com/dwyl/english-words
