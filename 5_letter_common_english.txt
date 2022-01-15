@@ -27,7 +27,7 @@ apply
 argue
 arise
 armed
-Asian
+asian
 aside
 asset
 avoid
@@ -42,7 +42,7 @@ begin
 being
 below
 bench
-Bible
+bible
 birth
 black
 blade
@@ -200,8 +200,8 @@ image
 imply
 index
 inner
-Iraqi
-Irish
+iraqi
+irish
 issue
 joint
 judge
@@ -212,7 +212,7 @@ label
 labor
 large
 later
-Latin
+latin
 laugh
 layer
 learn
