@@ -112,7 +112,7 @@ dict_filename = args.dictionary
 if word_length == 5:
     dict_filename = '5_letter_' + dict_filename
 
-print('loading...')
+print(f'loading {dict_filename}...')
 d = Dictionary(dict_filename, word_length)
 valid_words = set(d.words)
 random.seed(seed)
@@ -131,9 +131,14 @@ max_attempts = word_length + 1
 word_generator = choose_target_word(d, args.num_games, args.exhaust)
 print('running...')
 for game_id in range(args.num_games):
-    target = next(word_generator)
+    target = None
+    try:
+        target = next(word_generator)
+    except StopIteration:
+        break
     logger.debug("New game (%d / %d). target: %s", game_id, args.num_games, target)
     correct = False
+    gave_up = False
     attempt = 1
     while attempt <= max_attempts:
         guess = None
@@ -151,6 +156,7 @@ for game_id in range(args.num_games):
         if guess == 'OUT OF GUESSES':
             logger.info('Player gave up')
             stats.gaveup()
+            gave_up = True
             break
         elif guess not in valid_words or len(guess) != len(target):
             logger.info('invalid word %s', guess)
@@ -182,7 +188,7 @@ for game_id in range(args.num_games):
                     safe_write(out_pipe, f"{resp}\n")
         attempt += 1
 
-    if not correct:
+    if not correct and not gave_up:
         safe_write(out_pipe, f"YOU LOSE\n")
         if out_pipe == sys.stdout:
             safe_write(out_pipe, f"The word was {target}\n\n")
