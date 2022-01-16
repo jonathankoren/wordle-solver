@@ -15,6 +15,7 @@ class Dictionary:
         self.letter_index = {}
         self.single_letters = set()
         self.words = []
+        self.filename = filename
         word_id = 0
         with open(filename, 'r') as infile:
             for word in infile.read().split("\n"):
@@ -116,7 +117,7 @@ class GameState:
                                 letter_freqs[letter] = letter_freqs.get(letter, 0) + 1
         return letter_freqs
 
-    def _single_guess_freqs(self, d, **kwargs):
+    def _single_guess_heuristics(self, d, **kwargs):
         NGRAM_LENGTH = kwargs.get('ngrams', 2)
         USE_POS_FREQ = kwargs.get('pos_freq', True)
 
@@ -148,6 +149,7 @@ class GameState:
         return sorted(scores.items(), key=lambda p: p[1], reverse=True)
 
     def _single_guess_greedy_entropy(self, d, **kwargs):
+        USE_MULTIPATH = kwargs.get('multipath', False)
         scores = {}
         tmp_contains = set(self.contains)
         candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp()))
@@ -172,7 +174,6 @@ class GameState:
 
         for candidate_id in candidate_ids:
             scores[d.words[candidate_id]] = 1
-
         return sorted(scores.items(), key=lambda p: p[1], reverse=True)
 
     def _single_guess_greedy_pointwise_mutual_info(self, d, **kwargs):
@@ -181,20 +182,26 @@ class GameState:
         candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp()))
         logger.debug('_sggpmi initial canidates: %d', len(candidate_ids))
         while (len(candidate_ids) > 1) and len(tmp_contains) < self.word_length:
-            max_pmi = 0
+            max_pmi = None
             max_pmi_letter = None
             for letter in d.single_letters - tmp_contains.union(self.does_not_contain):
-                p_letter_in_candidates = 1 - (len(candidate_ids - d.letter_index[letter]) / len(candidate_ids))
-                p_letter = len(d.letter_index[letter]) / len(d.words)
+                pmi = None
+                if len(candidate_ids) == len(d.words):
+                    # initial guess with the most frequent letter
+                    pmi = len(d.letter_index[letter])
+                    logger.debug('_sggpmi %s, pmi faked by frequency as %f', letter, pmi)
+                else:
+                    p_letter_in_candidates = 1 - (len(candidate_ids - d.letter_index[letter]) / len(candidate_ids))
+                    p_letter = len(d.letter_index[letter]) / len(d.words)
+                    if p_letter_in_candidates == 0:
+                        continue
 
-                if p_letter_in_candidates == 0:
-                    continue
-
-                pmi = math.log2(p_letter_in_candidates / p_letter)
+                    pmi = math.log2(p_letter_in_candidates / p_letter)
+                    logger.debug('_sggpmi %s, p_letter_in_candidates %f  p_letter %f  %f pmi %f', letter, p_letter_in_candidates, p_letter, p_letter_in_candidates / p_letter, pmi)
                 if max_pmi_letter is None or pmi > max_pmi:
                     max_pmi = pmi
                     max_pmi_letter = letter
-            logger.debug('_sgge MAX PMI letter %s pmi %f', max_pmi_letter, max_pmi)
+            logger.debug('_sggpmi MAX PMI letter %s pmi %f', max_pmi_letter, max_pmi)
             if max_pmi_letter is not None:
                 tmp_contains.add(max_pmi_letter)
                 candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp()))
@@ -206,9 +213,60 @@ class GameState:
 
         return sorted(scores.items(), key=lambda p: p[1], reverse=True)
 
+    def _single_guess_greedy_most_cond_prob(self, d, **kwargs):
+        USE_POS_FREQ = kwargs.get('pos_freq', True)
+        USE_MULTIPATH = kwargs.get('multipath', False)
+        scores = {}
+
+        tmp_contains = set(self.contains)
+        candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp()))
+        last_max_freq = None
+        overrides = None
+        if USE_POS_FREQ:
+            overrides = [None] * self.word_length
+        while (len(candidate_ids) > 1) and len(tmp_contains) < self.word_length:
+            letter_freqs = self._letter_freqs(list(d.unroll(candidate_ids)), 1, USE_POS_FREQ)
+            eligible_letters = d.single_letters - tmp_contains.union(self.does_not_contain)
+            max_freq = None
+            max_freq_letter = None
+            max_freq_position = None
+            logger.debug('_sggmcp eligible_letters %s  overrides %s', sorted(eligible_letters), str(overrides))
+            for letter in eligible_letters:
+                if USE_POS_FREQ:
+                    eligible_positions = []
+                    for i in range(self.word_length):
+                        if ((self.good_positions[i] is None) or (letter not in self.bad_positions[i])) or overrides[i] is None:
+                            eligible_positions.append(i)
+                    for position in eligible_positions:
+                        key = f'{letter}{position}'
+                        if max_freq is None or letter_freqs.get(key, 0) > max_freq:
+                            max_freq = letter_freqs.get(key, 0)
+                            max_freq_letter = letter
+                            max_freq_position = position
+                else:
+                    if max_freq is None or letter_freqs.get(letter, 0) > max_freq:
+                        max_freq = letter_freqs.get(letter, 0)
+                        max_freq_letter = letter
+                        last_max_freq = max_freq
+
+            logger.debug('_sggmcp max freq letter %s  position %s  freq %d  regexp %s', max_freq_letter, str(max_freq_position), max_freq, self._make_regexp(overrides).pattern)
+            tmp_contains.add(max_freq_letter)
+            if USE_POS_FREQ:
+                overrides[max_freq_position] = max_freq_letter
+            candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp(overrides)))
+
+        logger.debug('_sggmcp overrides %s', str(overrides))
+        for candidate_id in candidate_ids:
+            if last_max_freq is None:
+                scores[d.words[candidate_id]] = 1
+            else:
+                scores[d.words[candidate_id]] = last_max_freq
+
+        return sorted(scores.items(), key=lambda p: p[1], reverse=True)
+
     def guess(self, return_scores=False, **kwargs):
         logger.debug('STATE: wl %d, contains %s, dnc %s, regexp %s', self.word_length, self.contains, self.does_not_contain, self._make_regexp().pattern)
-        GUESS_LAMBDA = kwargs.get('glam', lambda d: self._single_guess_freqs(d))
+        GUESS_LAMBDA = kwargs.get('glam', lambda d: self._single_guess_heuristics(d))
         NORMALIZE_SCORES = kwargs.get('normalize', True)
         new_scores = {}
         for d in self.dictionaries:
@@ -219,6 +277,8 @@ class GameState:
             logger.debug("num guesss %d  norm %f", len(guesses), norm )
             if len(guesses) < 10:
                 logger.debug("guesses %s", guesses)
+            else:
+                logger.debug("guesses %s ...", guesses[:10])
 
             for (guess, score) in guesses:
                 if NORMALIZE_SCORES:
@@ -232,10 +292,12 @@ class GameState:
         else:
             return list(map(lambda p: p[0], scored))
 
-    def _make_regexp(self):
+    def _make_regexp(self, overrides=None):
         r = ''
         for i in range(self.word_length):
-            if self.good_positions[i] is not None:
+            if overrides is not None and overrides[i] is not None:
+                r += overrides[i]
+            elif self.good_positions[i] is not None:
                 r += self.good_positions[i]
             elif len(self.bad_positions[i]) > 0:
                 r += '[^'+ ''.join(self.bad_positions[i]) + ']'
@@ -268,19 +330,19 @@ if __name__ == '__main__':
         dictionaries.append(Dictionary(filename, args.word_length))
 
     if (not args.game):
-        print('loading...')
+        print('loading...', list(map(lambda d: d.filename, dictionaries)))
     game_state = GameState(args.word_length, dictionaries)
 
     strategies = [
         # 0
-        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_freqs(d, ngrams=2, pos_freq=True)),
-        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_freqs(d, ngrams=2, pos_freq=False)),
-        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_freqs(d, ngrams=1, pos_freq=True)),
-        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_freqs(d, ngrams=1, pos_freq=False)),
-        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_freqs(d, ngrams=2, pos_freq=True)),
-        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_freqs(d, ngrams=2, pos_freq=False)),
-        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_freqs(d, ngrams=1, pos_freq=True)),
-        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_freqs(d, ngrams=1, pos_freq=False)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=2, pos_freq=True)),    # 0.log:Number of attempts to win: mean: 4.430554 stddev: 63.349
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=2, pos_freq=False)),   # 1.log:Number of attempts to win: mean: 4.422290 stddev: 63.482
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=1, pos_freq=True)),    # 2.log:Number of attempts to win: mean: 4.414069 stddev: 63.569
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=1, pos_freq=False)),   # 3.log:Number of attempts to win: mean: 4.432977 stddev: 63.521
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=2, pos_freq=True)),   # 4.log:Number of attempts to win: mean: 4.353128 stddev: 64.394
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=2, pos_freq=False)),  # 5.log:Number of attempts to win: mean: 4.366832 stddev: 64.002
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=1, pos_freq=True)),   # 6.log:Number of attempts to win: mean: 4.335903 stddev: 64.753
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=1, pos_freq=False)),  # 7.log:Number of attempts to win: mean: 4.376372 stddev: 64.488
 
         # 8
         lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_entropy(d)),
@@ -288,7 +350,13 @@ if __name__ == '__main__':
 
         # 10
         lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_pointwise_mutual_info(d)),
-        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_pointwise_mutual_info(d))
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_pointwise_mutual_info(d)),
+
+        # 12
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=True)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=True)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=False))
     ]
     if args.strategy >= len(strategies):
         args.strategy = 0
@@ -325,6 +393,7 @@ if __name__ == '__main__':
         if (not args.game):
             print(rescored[:10])
             try:
+                sys.stdout.write("\n> ")
                 line = input()
                 logger.debug('RECVD.notgame <%s>', line)
             except EOFError:
@@ -348,7 +417,3 @@ if __name__ == '__main__':
                 print('OUT OF GUESSES')
                 game_state.reset()
                 line = ''
-
-
-        if (not args.game):
-            sys.stdout.write("\n> ")
