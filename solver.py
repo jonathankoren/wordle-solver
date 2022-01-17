@@ -2,8 +2,10 @@
 
 import argparse
 import math
-import sys
+import random
 import re
+import sys
+import time
 
 import logging
 logging.basicConfig()
@@ -94,6 +96,8 @@ class GameState:
             elif last_letter is not None and last_letter not in '?*':
                 if last_letter not in self.contains:
                     self.does_not_contain.add(last_letter)
+                else:
+                    self.bad_positions[position - 1].add(last_letter)
 
             position += 1
             last_letter = l
@@ -149,7 +153,7 @@ class GameState:
         return sorted(scores.items(), key=lambda p: p[1], reverse=True)
 
     def _single_guess_greedy_entropy(self, d, **kwargs):
-        USE_MULTIPATH = kwargs.get('multipath', False)
+        NO_SURRENDER = kwargs.get('no_surrender', False)
         scores = {}
         tmp_contains = set(self.contains)
         candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp()))
@@ -172,11 +176,17 @@ class GameState:
             else:
                 break
 
+
+        if NO_SURRENDER and len(candidate_ids) == 0:
+            # We selected everything away! Abort
+            candidate_ids = set(d.search(self.word_length, set(self.contains), self.does_not_contain, self._make_regexp()))
+
         for candidate_id in candidate_ids:
             scores[d.words[candidate_id]] = 1
         return sorted(scores.items(), key=lambda p: p[1], reverse=True)
 
     def _single_guess_greedy_pointwise_mutual_info(self, d, **kwargs):
+        NO_SURRENDER = kwargs.get('no_surrender', False)
         scores = {}
         tmp_contains = set(self.contains)
         candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp()))
@@ -208,14 +218,97 @@ class GameState:
             else:
                 break
 
+        if NO_SURRENDER and len(candidate_ids) == 0:
+            # We selected everything away! Abort
+            candidate_ids = set(d.search(self.word_length, set(self.contains), self.does_not_contain, self._make_regexp()))
+
         for candidate_id in candidate_ids:
             scores[d.words[candidate_id]] = 1
 
         return sorted(scores.items(), key=lambda p: p[1], reverse=True)
 
-    def _single_guess_greedy_most_cond_prob(self, d, **kwargs):
+    def _single_guess_greedy_most_cond_prob_recursive_helper(self, d, tmp_contains, canidate_ids, overrides, **kwargs):
         USE_POS_FREQ = kwargs.get('pos_freq', True)
-        USE_MULTIPATH = kwargs.get('multipath', False)
+
+        letter_freqs = self._letter_freqs(list(d.unroll(canidate_ids)), 1, USE_POS_FREQ)
+        eligible_letters = d.single_letters - tmp_contains.union(self.does_not_contain)
+        last_max_freq = None
+        max_freq = 0
+        max_freq_letter = []
+        max_freq_position = []
+        logger.debug('_sggmcprh eligible_letters %s  overrides %s', sorted(eligible_letters), str(overrides))
+        for letter in eligible_letters:
+            if USE_POS_FREQ:
+                eligible_positions = []
+                for i in range(self.word_length):
+                    if ((self.good_positions[i] is None) or (letter not in self.bad_positions[i])) or overrides[i] is None:
+                        eligible_positions.append(i)
+                for position in eligible_positions:
+                    key = f'{letter}{position}'
+                    if letter_freqs.get(key, 0) > 0:
+                        if len(max_freq_letter) == 0 or letter_freqs.get(key, 0) > max_freq:
+                            max_freq = letter_freqs.get(key, 0)
+                            max_freq_letter = [letter]
+                            max_freq_position = [position]
+                        elif letter_freqs.get(key, 0) == max_freq:
+                            max_freq_letter.append(letter)
+                            max_freq_position.append(position)
+            else:
+                if letter_freqs.get(letter, 0) > 0:
+                    if len(max_freq_letter) == 0 or letter_freqs.get(letter, 0) > max_freq:
+                        max_freq = letter_freqs.get(letter, 0)
+                        max_freq_letter = [letter]
+                        last_max_freq = max_freq
+                    elif letter_freqs.get(letter, 0) == max_freq:
+                        max_freq_letter.append(letter)
+
+        logger.debug('_sggmcprh returning %s %s %s', str(max_freq_letter), str(max_freq_position), str(max_freq))
+        return (max_freq_letter, max_freq_position, max_freq)
+
+    def _single_guess_greedy_most_cond_prob_recursive(self, d, **kwargs):
+        USE_POS_FREQ = kwargs.get('pos_freq', True)
+        candidate_ids = set(d.search(self.word_length, self.contains, self.does_not_contain, self._make_regexp()))
+        overrides = None
+        if USE_POS_FREQ:
+            overrides = [None] * self.word_length
+        num_missing_letters = self.word_length - len(self.contains)
+        scores = {}
+        for id in self._single_guess_greedy_most_cond_prob_recursive_main(d,  self.contains, candidate_ids, overrides, num_missing_letters, **kwargs):
+            scores[d.words[id]] = sum(map(lambda c: len(d.letter_index[c]), d.words[id]))
+        logger.debug('_sggmcpr got %d candidates', len(scores))
+        return sorted(scores.items(), key=lambda p: p[1], reverse=True)
+
+    def _single_guess_greedy_most_cond_prob_recursive_main(self, d, contains, candidate_ids, overrides, num_missing_letters, **kwargs):
+        logger.debug('_sggmcprm %s %d %d %s', contains, len(candidate_ids), num_missing_letters, overrides)
+        USE_POS_FREQ = kwargs.get('pos_freq', True)
+
+        ret = []
+        (max_freq_letter, max_freq_position, max_freq) = self._single_guess_greedy_most_cond_prob_recursive_helper(d, contains, candidate_ids, overrides, **kwargs)
+        for i in range(len(max_freq_letter)):
+            tmp_overrides = overrides
+            tmp_contains = set(contains)
+            tmp_contains.add(max_freq_letter[i])
+            if USE_POS_FREQ:
+                tmp_overrides = overrides.copy()
+                tmp_overrides[max_freq_position[i]] = max_freq_letter[i]
+
+            tmp_candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp(tmp_overrides)))
+            if num_missing_letters == 1:
+                logger.debug('_sggmcprm bottomed out with %d candidates %s', len(tmp_candidate_ids), list(map(lambda c: d.words[c], tmp_candidate_ids))[:10])
+                for id in tmp_candidate_ids:
+                    ret.append(id)
+            else:
+                logger.debug('_sggmcprm recurring from %s %d', str(contains), num_missing_letters)
+                ret += self._single_guess_greedy_most_cond_prob_recursive_main(d, tmp_contains, tmp_candidate_ids, tmp_overrides, num_missing_letters - 1, **kwargs)
+
+        if len(candidate_ids) > 0 and len(ret) == 0:
+            logger.debug('_sggmcprm cant trim the candidates just returning the orig set')
+            return candidate_ids
+        return ret
+
+    def _single_guess_greedy_most_cond_prob(self, d, **kwargs):
+        USE_POS_FREQ = kwargs.get('pos_freq', False)
+        NO_SURRENDER = kwargs.get('no_surrender', False)
         scores = {}
 
         tmp_contains = set(self.contains)
@@ -256,11 +349,47 @@ class GameState:
             candidate_ids = set(d.search(self.word_length, tmp_contains, self.does_not_contain, self._make_regexp(overrides)))
 
         logger.debug('_sggmcp overrides %s', str(overrides))
+        if NO_SURRENDER and len(candidate_ids) == 0:
+            # We selected everything away! Abort
+            candidate_ids = set(d.search(self.word_length, set(self.contains), self.does_not_contain, self._make_regexp()))
+            last_max_freq = None
         for candidate_id in candidate_ids:
             if last_max_freq is None:
                 scores[d.words[candidate_id]] = 1
             else:
                 scores[d.words[candidate_id]] = last_max_freq
+
+        return sorted(scores.items(), key=lambda p: p[1], reverse=True)
+
+    def _single_guess_random(self, d, **kwargs):
+        IGNORE_FEEDBACK = kwargs.get('ignore_feedback', False)
+        scores = {}
+        candidates = list(range(len(d.words)))
+        if not IGNORE_FEEDBACK:
+            candidates = list(d.search(self.word_length, self.contains, self.does_not_contain, self._make_regexp()))
+            logger.debug('_sgr took feedback and got %d candidates', len(candidates))
+        else:
+            logger.debug('_sgr ignored feedback and got %d candidates', len(candidates))
+
+        for word in d.unroll(candidates):
+            scores[word] = random.random()
+        return sorted(scores.items(), key=lambda p: p[1], reverse=True)
+
+
+    def _single_guess_joint_conf_prob(self, d, **kwargs):
+        candidates = list(d.unroll(d.search(self.word_length, self.contains, self.does_not_contain, self._make_regexp())))
+        freqs = {}
+        reverse = {}
+        scores = {}
+        for word in candidates:
+            key = ''.join(sorted(word))
+            if key not in reverse:
+                reverse[key] = []
+            reverse[key].append(word)
+            freqs[key] = freqs.get(key, 0) + 1
+        for (k, v) in freqs.items():
+            for word in reverse[k]:
+                scores[word] =  v / len(candidates)
 
         return sorted(scores.items(), key=lambda p: p[1], reverse=True)
 
@@ -345,18 +474,50 @@ if __name__ == '__main__':
         lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=1, pos_freq=False)),  # 7.log:Number of attempts to win: mean: 4.376372 stddev: 64.488
 
         # 8
-        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_entropy(d)),
-        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_entropy(d)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_entropy(d, no_surrender=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_entropy(d, no_surrender=False)),
 
         # 10
         lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_pointwise_mutual_info(d)),
         lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_pointwise_mutual_info(d)),
 
         # 12
-        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=True)),
-        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=False)),
-        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=True)),
-        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=False))
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=True, no_surrender=False)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=False, no_surrender=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=True, no_surrender=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=False, no_surrender=False)),
+
+        # 16
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob_recursive(d, pos_freq=True)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob_recursive(d, pos_freq=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob_recursive(d, pos_freq=True)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob_recursive(d, pos_freq=False)),
+
+        # 20
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_entropy(d, no_surrender=True)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_entropy(d, no_surrender=True)),
+
+        # 22
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=True, no_surrender=True)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=False, no_surrender=True)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=True, no_surrender=True)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_most_cond_prob(d, pos_freq=False, no_surrender=True)),
+
+
+        # 26
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_greedy_pointwise_mutual_info(d), no_surrender=True),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_greedy_pointwise_mutual_info(d), no_surrender=True),
+
+        # 28
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_random(d, ignore_feedback=True)),
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_random(d, ignore_feedback=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_random(d, ignore_feedback=True)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_random(d, ignore_feedback=False)),
+
+        # 32
+        lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_joint_conf_prob(d)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_joint_conf_prob(d)),
+
     ]
     if args.strategy >= len(strategies):
         args.strategy = 0
