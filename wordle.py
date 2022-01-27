@@ -155,7 +155,7 @@ for game_id in range(args.num_games):
         target = next(word_generator)
     except StopIteration:
         break
-    logger.debug("New game (%d / %d). target: %s", game_id, args.num_games, target)
+    logger.info("New game (%d / %d). target: %s", game_id, args.num_games, target)
     correct = False
     gave_up = False
     attempt = 1
