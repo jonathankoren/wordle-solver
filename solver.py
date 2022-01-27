@@ -6,6 +6,7 @@ import random
 import re
 import sys
 import time
+import os.path
 
 import logging
 logging.basicConfig()
@@ -60,7 +61,6 @@ class Dictionary:
     def unroll(self, ids):
         return map(lambda id: self.words[id], ids)
 
-
 class GameState:
     def __init__(self, word_length, dictionaries):
         self.word_length = word_length
@@ -104,9 +104,11 @@ class GameState:
         if not read_special and last_letter is not None and last_letter not in self.contains:
             self.does_not_contain.add(last_letter)
 
-    def _letter_freqs(self, candidates, NGRAM_LENGTH, USE_POS_FREQ):
+    def _letter_freqs(self, candidates, NGRAM_LENGTH, USE_POS_FREQ, SCORE_ONLY_UNUSED_LETTERS):
         # build unigram, bigram, and position frequencies
-        used_letters = self.contains.union(self.does_not_contain)
+        used_letters = set()
+        if SCORE_ONLY_UNUSED_LETTERS:
+            used_letters = self.contains.union(self.does_not_contain)
         letter_freqs = {}
         for word in candidates:
             for i in range(len(word)):
@@ -124,14 +126,17 @@ class GameState:
     def _single_guess_heuristics(self, d, **kwargs):
         NGRAM_LENGTH = kwargs.get('ngrams', 2)
         USE_POS_FREQ = kwargs.get('pos_freq', True)
+        SCORE_ONLY_UNUSED_LETTERS = kwargs.get('score_only_unused', True)
 
         candidates = list(d.unroll(d.search(self.word_length, self.contains, self.does_not_contain, self._make_regexp())))
 
-        letter_freqs = self._letter_freqs(candidates, NGRAM_LENGTH, USE_POS_FREQ)
+        letter_freqs = self._letter_freqs(candidates, NGRAM_LENGTH, USE_POS_FREQ, SCORE_ONLY_UNUSED_LETTERS)
 
         # score the candidates
         scores = {}
-        eligible_letters = d.single_letters - self.contains.union(self.does_not_contain)
+        eligible_letters = d.single_letters
+        if SCORE_ONLY_UNUSED_LETTERS:
+            eligible_letters = d.single_letters - self.contains.union(self.does_not_contain)
         for word in candidates:
             scores[word] = 0
             scored_letters = set()
@@ -375,7 +380,6 @@ class GameState:
             scores[word] = random.random()
         return sorted(scores.items(), key=lambda p: p[1], reverse=True)
 
-
     def _single_guess_joint_conf_prob(self, d, **kwargs):
         candidates = list(d.unroll(d.search(self.word_length, self.contains, self.does_not_contain, self._make_regexp())))
         freqs = {}
@@ -407,7 +411,7 @@ class GameState:
             if len(guesses) < 10:
                 logger.debug("guesses %s", guesses)
             else:
-                logger.debug("guesses %s ...", guesses[:10])
+                logger.debug("guesses %s ... %d", guesses[:10], len(guesses))
 
             for (guess, score) in guesses:
                 if NORMALIZE_SCORES:
@@ -442,7 +446,8 @@ if __name__ == '__main__':
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--verbose', action='store_true', default=False)
     parser.add_argument('--strategy', type=int, default=0, help='ID of guessing strategy')
-    parser.add_argument('--dictionaries', type=str, default='words_alpha.txt,google-10000-english.txt', help='CSV of dictionary files to load')
+    parser.add_argument('--dictionary_dir', type=str, default='./dicts', help='Directory containing dictionaries')
+    parser.add_argument('--dictionaries', type=str, default='5_letter_wordle_targets.txt', help='CSV of dictionary files to load')
     args = parser.parse_args()
 
     if args.verbose:
@@ -450,12 +455,9 @@ if __name__ == '__main__':
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
-
     dictionaries = []
     for filename in args.dictionaries.split(','):
-        filename = filename.strip()
-        if args.word_length == 5:
-            filename = '5_letter_' + filename
+        filename = os.path.join(args.dictionary_dir, filename.strip())
         dictionaries.append(Dictionary(filename, args.word_length))
 
     if (not args.game):
@@ -518,6 +520,9 @@ if __name__ == '__main__':
         lambda: game_state.guess(normalize=True, glam=lambda d: game_state._single_guess_joint_conf_prob(d)),
         lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_joint_conf_prob(d)),
 
+        # 34
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=1, pos_freq=True, score_only_unused=False)),
+        lambda: game_state.guess(normalize=False, glam=lambda d: game_state._single_guess_heuristics(d, ngrams=2, pos_freq=True, score_only_unused=False)),
     ]
     if args.strategy >= len(strategies):
         args.strategy = 0

@@ -3,12 +3,32 @@
 import argparse
 import logging
 import math
+import os.path
 import random
 import subprocess
 import sys
 import time
 
 from solver import Dictionary
+
+def evaluate(guess, target):
+    target_letters = count_letters(target)
+    guess_letters = count_letters(guess)
+    codes = [''] * len(target)
+    for (i, c) in enumerate(guess):
+        if target[i] == c:
+            codes[i] = '*'
+            target_letters[c] -= 1
+            guess_letters[c] -= 1
+    for (i, c) in enumerate(guess):
+        if (target[i] != c) and (guess_letters.get(c, 0) > 0) and (target_letters.get(c, 0) > 0):
+            codes[i] = '?'
+            target_letters[c] -= 1
+            guess_letters[c] -= 1
+    resp = ''
+    for (i, c) in enumerate(guess):
+        resp += c + codes[i]
+    return resp
 
 def count_letters(word):
     letters = {}
@@ -89,14 +109,15 @@ def safe_readline(p):
 
 
 parser = argparse.ArgumentParser(description='Wordle')
-parser.add_argument('word_length', type=int, default=5, nargs='?', help='length of word')
 parser.add_argument('num_games', type=int, default=1, nargs='?', help='number_of_games')
+parser.add_argument('word_length', type=int, default=5, nargs='?', help='length of word')
 parser.add_argument('--seed', type=int, default=int(time.time()), help='random number seed')
 parser.add_argument('--exhaust', action='store_true', default=False, help='Systematically play with every word in the dictionary')
 parser.add_argument('--exec', type=str, default=None, help='Program to run to play Wordle')
 parser.add_argument('--debug', action='store_true', default=False)
 parser.add_argument('--verbose', action='store_true', default=False)
-parser.add_argument('--dictionary', type=str, default='words_alpha.txt', help='Alternate dictionary')
+parser.add_argument('--dictionary_dir', type=str, default='./dicts', help='Directory containing dictionaries')
+parser.add_argument('--dictionary', type=str, default='5_letter_wordle_targets.txt', help='Alternate dictionary')
 args = parser.parse_args()
 word_length = args.word_length
 seed = args.seed
@@ -108,9 +129,7 @@ if args.verbose:
 if args.debug:
     logger.setLevel(logging.DEBUG)
 
-dict_filename = args.dictionary
-if word_length == 5:
-    dict_filename = '5_letter_' + dict_filename
+dict_filename = os.path.join(args.dictionary_dir, args.dictionary)
 
 print(f'loading {dict_filename}...')
 d = Dictionary(dict_filename, word_length)
@@ -121,7 +140,7 @@ in_pipe = sys.stdin
 out_pipe = sys.stdout
 p = None
 if args.exec is not None:
-    spargs = args.exec.split(' ') + ['--game', str(word_length)]
+    spargs = list(filter(lambda x: len(x) > 0, args.exec.split(' ')))
     p = subprocess.Popen(spargs, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     in_pipe = p.stdout
     out_pipe = p.stdin
@@ -171,17 +190,9 @@ for game_id in range(args.num_games):
             stats.win(attempt)
             break
         else:
-            resp = ''
-            for (i, c) in enumerate(guess):
-                resp += c
-                if c == target[i]:
-                    resp += '*'
-                    target_letters[c] -= 1
-                elif c in target_letters and target_letters[c] > 0:
-                    resp += '?'
-
+            resp = evaluate(guess, target)
             if attempt != max_attempts:
-                logger.debug('sending %s, attempt %d', resp, attempt)
+                logger.debug('sending %s , attempt %d', resp, attempt)
                 if out_pipe == sys.stdout:
                     print(f"{resp}\n")
                 else:
@@ -200,7 +211,8 @@ if p is not None:
     p.terminate()
 
 print()
-print(f'Player: {args.exec}  Dictionary: {dict_filename}  Word Length: {args.word_length}  Seed: {seed}')
+print(f'Player: {args.exec}')
+print(f'Dictionary: {dict_filename}  Word Length: {args.word_length}  Seed: {seed}')
 if args.exhaust:
     print('Exhaust dictionary')
 print(f'Wins {stats.wins} Losses: {stats.losses} Surrenders: {stats.gave_up} Played: {stats.played()} WinPct {(stats.wins / stats.played() * 100):.3f} %')
