@@ -87,15 +87,18 @@ class GameState:
                 position -= 1
                 self.bad_positions[position].add(last_letter)
                 self.contains.add(last_letter)
+                self.does_not_contain -= set([last_letter])
                 read_special = True
             elif l == '*':
                 position -= 1
                 self.good_positions[position] = last_letter
                 self.contains.add(last_letter)
+                self.does_not_contain -= set([last_letter])
                 read_special = True
             elif last_letter is not None and last_letter not in '?*':
                 if last_letter not in self.contains:
-                    self.does_not_contain.add(last_letter)
+                    if last_letter not in self.contains:
+                        self.does_not_contain.add(last_letter)
                 else:
                     self.bad_positions[position - 1].add(last_letter)
 

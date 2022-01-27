@@ -84,7 +84,7 @@ class Statistics:
 def choose_target_word(d, num_games, exhaust):
     game_id = 0
     if exhaust:
-        while (game_id < len(d.words)) and (game_id < num_games):
+        while (game_id < len(d.words)):
             yield d.words[game_id]
             game_id += 1
     else:
@@ -149,7 +149,9 @@ stats = Statistics()
 max_attempts = word_length + 1
 word_generator = choose_target_word(d, args.num_games, args.exhaust)
 print('running...')
-for game_id in range(args.num_games):
+game_id = -1
+while True:
+    game_id += 1
     target = None
     try:
         target = next(word_generator)
