@@ -58,11 +58,11 @@ class Statistics:
 
     def mean(self):
         numerator = sum(map(lambda p: p[0] * p[1], self.histogram.items()))
-        return numerator / float(self.wins + 1)
+        return numerator / float(self.wins)
 
     def stddev(self):
         mean = self.mean()
-        return math.sqrt(sum(map(lambda p: (p[1] - mean) ** 2, self.histogram.items())) / float(self.wins + 1))
+        return math.sqrt(sum(list(map(lambda p: ((p[0] - mean) ** 2) * p[1], self.histogram.items()))) / float(self.wins))
 
     def score(self):
         return sum(map(lambda p: p[0] * p[1], self.histogram.items())) + (7 * (self.losses + self.gave_up))
